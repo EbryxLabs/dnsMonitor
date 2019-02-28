@@ -5,7 +5,7 @@ import argparse
 import boto3
 
 
-SESSION = boto3.session.Session(profile_name='ebryx-soc-l5')
+SESSION = boto3.session.Session()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -13,6 +13,24 @@ handler = logging.StreamHandler()
 handler.setLevel(logging.INFO)
 handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
 logger.addHandler(handler)
+
+
+def define_params():
+
+    global SESSION, logger, handler
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', default='info', choices=['info', 'debug'],
+                        help='level of logging for the script.')
+    parser.add_argument('-profile', default='default', type=str,
+                        help='profile name to use for aws configuration. '
+                        'mentioned in files `~/.aws/credentials` and '
+                        '`~/.aws/config`')
+
+    args = parser.parse_args()
+
+    SESSION = boto3.session.Session(profile_name=args.profile)
+    logger.setLevel(logging.INFO if args.v == 'info' else logging.DEBUG)
+    handler.setLevel(logging.INFO if args.v == 'info' else logging.DEBUG)
 
 
 def get_cloudfront_domains():
@@ -130,6 +148,7 @@ def parse_records(zones, eips, cfdomains):
 
 if __name__ == "__main__":
 
+    define_params()
     cloudfront_domains = get_cloudfront_domains()
     elastic_ips = get_elastic_ips()
     hosted_zones = get_dns_records()
