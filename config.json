@@ -1,0 +1,7 @@
+{
+  "whitelists": {
+    "ips": ["x.x.x.x"],
+    "hosts": ["example.com"],
+    "txts": ["sample-txt-value"]
+  }
+}

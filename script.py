@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 import argparse
@@ -31,6 +32,29 @@ def define_params():
     SESSION = boto3.session.Session(profile_name=args.profile)
     logger.setLevel(logging.INFO if args.v == 'info' else logging.DEBUG)
     handler.setLevel(logging.INFO if args.v == 'info' else logging.DEBUG)
+
+
+def read_config():
+
+    path = os.environ.get('CONFIG_FILE')
+    if not path:
+        logger.info('No `CONFIG_FILE` environment variable found. '
+                    'Skipping config read.')
+        return dict()
+
+    if not os.path.isfile(path):
+        logger.info('Invalid path in `CONFIG_FILE` environment variable. '
+                    'Skipping config read.')
+        return dict()
+
+    logger.info('Reading CONFIG_FILE...')
+    try:
+        config = json.load(open(path, 'r'))
+    except json.JSONDecodeError:
+        logger.info('Error in decoding config file. Skipping config read.')
+        return dict()
+
+    return config
 
 
 def get_cloudfront_domains():
@@ -101,17 +125,21 @@ def get_dns_records():
     return hosted_zones
 
 
-def parse_records(zones, eips, cfdomains):
+def parse_records(zones, eips, cfdomains, config):
 
     logger.info('Parsing zone records...')
 
     ignore_types = ['NS', 'SOA']
     logger.info('Excluded %s record types.', ignore_types)
+    eips.extend([
+        x for x in config.get('whitelists', dict()).get('ips', list())])
 
     for zone in zones:
         records = zone['records']
         a_names = [
             x.get('Name') for x in records if x.get('Type') in ['A', 'AAAA']]
+        a_names.extend([
+            x for x in config.get('whitelists', dict()).get('hosts', list())])
 
         for record in records.copy():
             if record.get('Type') in ignore_types:
@@ -142,6 +170,17 @@ def parse_records(zones, eips, cfdomains):
                 if not subrecords:
                     records.remove(record)
 
+            if record.get('Type') in ['TXT']:
+                subrecords = record.get('ResourceRecords', list())
+                for subrecord in subrecords.copy():
+                    if subrecord.get('Value').strip('"').strip("'") \
+                            in config.get('whitelists', dict()) \
+                            .get('txts', list()):
+                        subrecords.remove(subrecord)
+
+                if not subrecords:
+                    records.remove(record)
+
     logger.info('Parsed zone records successfully.')
     logger.debug(zones)
 
@@ -149,7 +188,8 @@ def parse_records(zones, eips, cfdomains):
 if __name__ == "__main__":
 
     define_params()
+    config = read_config()
     cloudfront_domains = get_cloudfront_domains()
     elastic_ips = get_elastic_ips()
     hosted_zones = get_dns_records()
-    parse_records(hosted_zones, elastic_ips, cloudfront_domains)
+    parse_records(hosted_zones, elastic_ips, cloudfront_domains, config)

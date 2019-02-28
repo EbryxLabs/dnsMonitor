@@ -13,3 +13,17 @@ You can set the logging level to `info` or `debug`.
 ```
 python script.py -v debug
 # default level is `info`
+```
+
+### Configuration
+You can provide a `.json` formatted file in **`CONFIG_FILE`** environment variable. **`whitelists`** field encapsulate the options to whitelist entries from DNS records.
+```
+{
+  "whitelists": {
+    "ips": ["x.x.x.x"],
+    "hosts": ["example.com"],
+    "txts": ["sample-txt-value"]
+  }
+}
+```
+**`ips`** are looked up in `A` or `AAAA` records, **`hosts`** are looked up in `CNAME` records and **`txts`** are looked up in `TXT` records. 
