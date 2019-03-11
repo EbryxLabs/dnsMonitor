@@ -1,7 +1,7 @@
 {
   "whitelists": {
     "ips": ["x.x.x.x"],
-    "hosts": ["example.com"],
+    "hosts": ["example.com", "*elasticbeanstalk.com", "*elb.amazonaws.com"],
     "txts": ["sample-txt-value"]
   }
 }

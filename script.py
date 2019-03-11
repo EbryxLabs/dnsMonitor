@@ -70,7 +70,7 @@ def get_cloudfront_domains():
         domains.append(item.get('DomainName'))
 
     logger.info('[%02d] cloudfront domains fetched.', len(domains))
-    logger.debug(domains)
+    print(json.dumps(domains, indent=2))
     return domains
 
 
@@ -103,18 +103,20 @@ def get_dns_records():
             continue
 
         record_sets = list()
-        record_id = str()
+        record_name = str()
         while True:
-            if not record_id:
+            if not record_name:
                 res = route53.list_resource_record_sets(
                     HostedZoneId=zone['Id'])
             else:
                 res = route53.list_resource_record_sets(
-                    HostedZoneId=zone['Id'], StartRecordIdentifier=record_id)
+                    HostedZoneId=zone['Id'], StartRecordName=record_name)
 
             record_sets.extend(res.get('ResourceRecordSets'))
-            if not(res.get('IsTruncated') or res.get('NextRecordIdentifier')):
+            if not res.get('IsTruncated'):
                 break
+            else:
+                record_name = res.get('NextRecordName')
 
         hosted_zones.append({
             'name': zone['Name'], 'Id': zone['Id'],
@@ -125,30 +127,49 @@ def get_dns_records():
     return hosted_zones
 
 
+def is_whitelisted(config, list_name, value):
+
+    for item in config.get('whitelists', dict()).get(list_name, list()):
+        if item.startswith('*') and item.endswith('*'):
+            if value in item.replace('*', str()):
+                return True
+
+        if item.startswith('*') and not item.endswith('*'):
+            if value.endswith(item.replace('*', str())):
+                return True
+
+        if not item.startswith('*') and item.endswith('*'):
+            if value.startswith(item.replace('*', str())):
+                return True
+
+
 def parse_records(zones, eips, cfdomains, config):
 
     logger.info('Parsing zone records...')
 
-    ignore_types = ['NS', 'SOA']
+    ignore_types = ['NS', 'SOA', 'MX', 'TXT']
     logger.info('Excluded %s record types.', ignore_types)
-    eips.extend([
-        x for x in config.get('whitelists', dict()).get('ips', list())])
 
     for zone in zones:
         records = zone['records']
-        a_names = [
-            x.get('Name') for x in records if x.get('Type') in ['A', 'AAAA']]
-        a_names.extend([
-            x for x in config.get('whitelists', dict()).get('hosts', list())])
+        a_record_names = [x.get('Name') for x in records
+                          if x.get('Type') in ['A', 'AAAA']]
 
         for record in records.copy():
             if record.get('Type') in ignore_types:
                 records.remove(record)
 
             if record.get('Type') == 'CNAME':
-                subrecords = record.get('ResourceRecords')
+                subrecords = record.get('ResourceRecords', list())
+
                 for subrecord in subrecords.copy():
-                    if subrecord.get('Value') in a_names:
+                    value = subrecord.get('Value')
+
+                    if value in a_record_names:
+                        subrecords.remove(subrecord)
+                        continue
+
+                    if is_whitelisted(config, 'hosts', value):
                         subrecords.remove(subrecord)
 
                 if not subrecords:
@@ -156,15 +177,15 @@ def parse_records(zones, eips, cfdomains, config):
 
             if record.get('Type') in ['A', 'AAAA']:
 
-                # if record.get('AliasTarget') and \
-                #         record['AliasTarget'].get('DNSName') and \
-                #         record['AliasTarget']['DNSName'].strip('.') \
-                #         in cfdomains:
-                #     records.remove(record)
-                #     continue
                 subrecords = record.get('ResourceRecords', list())
                 for subrecord in subrecords.copy():
-                    if subrecord.get('Value') in eips:
+                    value = subrecord.get('Value')
+
+                    if value in eips:
+                        subrecords.remove(subrecord)
+                        continue
+
+                    if is_whitelisted(config, 'ips', value):
                         subrecords.remove(subrecord)
 
                 if not subrecords:
@@ -182,7 +203,7 @@ def parse_records(zones, eips, cfdomains, config):
                     records.remove(record)
 
     logger.info('Parsed zone records successfully.')
-    logger.debug(zones)
+    print(json.dumps(zones, indent=2))
 
 
 if __name__ == "__main__":
