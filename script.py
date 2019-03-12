@@ -70,25 +70,72 @@ def get_cloudfront_domains():
         domains.append(item.get('DomainName'))
 
     logger.info('[%02d] cloudfront domains fetched.', len(domains))
-    print(json.dumps(domains, indent=2))
+    logger.debug(json.dumps(domains, indent=2))
     return domains
 
 
-def get_elastic_ips():
+def get_instance_details():
 
-    logger.info('Fetching elastic IP addresses...')
+    logger.info('Fetching instance details...')
     addresses = list()
+    hosts = list()
     regions = SESSION.get_available_regions('dynamodb')
+
+    logger.info(str())
+    logger.info('  Fetching elastic IP addresses...')
     for region_name in regions:
         ec2 = SESSION.client('ec2', region_name=region_name)
+        logger.info('    Fetching from region [%s]...' % (region_name))
         res = ec2.describe_addresses()
 
         for item in res.get('Addresses'):
-            addresses.append(item['PublicIp'])
+            public = item.get('PublicIp')
+            private = item.get('PrivateIpAddress')
 
-    logger.info('[%02d] elastic IPs fetched.', len(addresses))
+            if public:
+                addresses.append(public)
+                hosts.append('ec2-' + '-'.join(public.split('.')) + '.' +
+                             region_name + '.compute.amazonaws.com')
+            if private:
+                addresses.append(private)
+                hosts.append('ip-' + '-'.join(private.split('.')) + '.' +
+                             region_name + '.compute.internal')
+
+    logger.info(str())
+    logger.info('  Fetching instances\' IP addresses...')
+    for region_name in regions:
+        ec2 = SESSION.client('ec2', region_name=region_name)
+        logger.info('    Fetching from region [%s]...' % (region_name))
+
+        next_token = None
+        while True:
+            if not next_token:
+                res = ec2.describe_instances(MaxResults=999)
+            else:
+                res = ec2.describe_instances(
+                    MaxResults=999, NextToken=next_token)
+
+            for _ in res.get('Reservations'):
+                for instance in _.get('Instances'):
+                    if instance.get('PublicIpAddress'):
+                        addresses.append(instance['PublicIpAddress'])
+                    if instance.get('PrivateIpAddress'):
+                        addresses.append(instance['PrivateIpAddress'])
+                    if instance.get('PublicDnsName'):
+                        hosts.append(instance['PublicDnsName'])
+                    if instance.get('PrivateDnsName'):
+                        hosts.append(instance['PrivateDnsName'])
+
+            if res.get('NextToken'):
+                next_token = res['NextToken']
+            else:
+                break
+
+    logger.info(str())
+    logger.info('[%02d] IPs fetched.', len(addresses))
     logger.debug(addresses)
-    return addresses
+    logger.debug(hosts)
+    return addresses, hosts
 
 
 def get_dns_records():
@@ -131,7 +178,7 @@ def is_whitelisted(config, list_name, value):
 
     for item in config.get('whitelists', dict()).get(list_name, list()):
         if item.startswith('*') and item.endswith('*'):
-            if value in item.replace('*', str()):
+            if item.replace('*', str()) in value:
                 return True
 
         if item.startswith('*') and not item.endswith('*'):
@@ -143,17 +190,23 @@ def is_whitelisted(config, list_name, value):
                 return True
 
 
-def parse_records(zones, eips, cfdomains, config):
+def parse_records(zones, ips, hosts, cfdomains, config):
 
     logger.info('Parsing zone records...')
 
     ignore_types = ['NS', 'SOA', 'MX', 'TXT']
     logger.info('Excluded %s record types.', ignore_types)
 
+    record_names = list()
     for zone in zones:
         records = zone['records']
-        a_record_names = [x.get('Name') for x in records
-                          if x.get('Type') in ['A', 'AAAA']]
+        record_names.extend(
+            [x.get('Name') for x in records
+             if x.get('Type') in ['A', 'AAAA', 'CNAME']])
+
+    record_names.extend(hosts)
+    for zone in zones:
+        records = zone['records']
 
         for record in records.copy():
             if record.get('Type') in ignore_types:
@@ -165,12 +218,20 @@ def parse_records(zones, eips, cfdomains, config):
                 for subrecord in subrecords.copy():
                     value = subrecord.get('Value')
 
-                    if value in a_record_names:
+                    if value.strip('.') in record_names or \
+                            value in record_names or value + '.' \
+                            in record_names:
                         subrecords.remove(subrecord)
                         continue
 
                     if is_whitelisted(config, 'hosts', value):
                         subrecords.remove(subrecord)
+                        continue
+
+                    if 'cloudfront.net' in value:
+                        filtered_value = value.strip(zone.get('name', str()))
+                        if filtered_value.strip('.') in cfdomains:
+                            subrecords.remove(subrecord)
 
                 if not subrecords:
                     records.remove(record)
@@ -181,7 +242,7 @@ def parse_records(zones, eips, cfdomains, config):
                 for subrecord in subrecords.copy():
                     value = subrecord.get('Value')
 
-                    if value in eips:
+                    if value in ips:
                         subrecords.remove(subrecord)
                         continue
 
@@ -194,9 +255,9 @@ def parse_records(zones, eips, cfdomains, config):
             if record.get('Type') in ['TXT']:
                 subrecords = record.get('ResourceRecords', list())
                 for subrecord in subrecords.copy():
-                    if subrecord.get('Value').strip('"').strip("'") \
-                            in config.get('whitelists', dict()) \
-                            .get('txts', list()):
+                    value = subrecord.get('Value')
+
+                    if is_whitelisted(config, 'txts', value):
                         subrecords.remove(subrecord)
 
                 if not subrecords:
@@ -210,7 +271,7 @@ if __name__ == "__main__":
 
     define_params()
     config = read_config()
-    cloudfront_domains = get_cloudfront_domains()
-    elastic_ips = get_elastic_ips()
+    cf_domains = get_cloudfront_domains()
+    ips, hosts = get_instance_details()
     hosted_zones = get_dns_records()
-    parse_records(hosted_zones, elastic_ips, cloudfront_domains, config)
+    parse_records(hosted_zones, ips, hosts, cf_domains, config)
