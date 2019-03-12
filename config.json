@@ -1,7 +1,18 @@
 {
   "whitelists": {
-    "ips": ["x.x.x.x"],
-    "hosts": ["example.com", "*elasticbeanstalk.com", "*elb.amazonaws.com"],
-    "txts": ["sample-txt-value"]
-  }
+    "ips": [],
+    "hosts": [
+      "*elasticbeanstalk.com*",
+      "*amazonses.com*",
+      "*elb.amazonaws.com*",
+      "*s3-website*",
+      "*rds.amazonaws.com",
+      "*cache.amazonaws.com",
+      "*es.amazonaws.com",
+      "*elb.eu-west-1.amazonaws.com",
+      "*execute-api.eu-west-1.amazonaws.com"
+    ],
+    "txts": []
+  },
+  "ignore_records": ["SOA", "MX", "NS"]
 }
