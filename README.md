@@ -27,3 +27,8 @@ You can provide a `.json` formatted file in **`CONFIG_FILE`** environment variab
 }
 ```
 **`ips`** are looked up in `A` or `AAAA` records, **`hosts`** are looked up in `CNAME` records and **`txts`** are looked up in `TXT` records. 
+
+```
+"ignore_records": ["MX", "SOA"]
+```
+**`ignore_records`** field in config allows to ignore specified record types.

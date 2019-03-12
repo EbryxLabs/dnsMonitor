@@ -194,9 +194,6 @@ def parse_records(zones, ips, hosts, cfdomains, config):
 
     logger.info('Parsing zone records...')
 
-    ignore_types = ['NS', 'SOA', 'MX', 'TXT']
-    logger.info('Excluded %s record types.', ignore_types)
-
     record_names = list()
     for zone in zones:
         records = zone['records']
@@ -205,6 +202,9 @@ def parse_records(zones, ips, hosts, cfdomains, config):
              if x.get('Type') in ['A', 'AAAA', 'CNAME']])
 
     record_names.extend(hosts)
+    ignore_types = config.get('ignore_records', list())
+    logger.info('Excluded %s record types.', ignore_types)
+
     for zone in zones:
         records = zone['records']
 
