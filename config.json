@@ -5,14 +5,13 @@
       "*elasticbeanstalk.com*",
       "*amazonses.com*",
       "*elb.amazonaws.com*",
-      "*s3-website*",
       "*rds.amazonaws.com",
       "*cache.amazonaws.com",
       "*es.amazonaws.com",
-      "*elb.eu-west-1.amazonaws.com",
-      "*execute-api.eu-west-1.amazonaws.com"
+      "*.acm-validations.*"
     ],
     "txts": []
   },
-  "ignore_records": ["SOA", "MX", "NS"]
+  "ignore_records": ["SOA", "MX", "NS", "TXT"],
+  "hooks": []
 }
