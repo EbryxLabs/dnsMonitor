@@ -1,9 +1,11 @@
 import os
 import json
+import time
 import logging
 import argparse
 
 import boto3
+import requests
 
 
 SESSION = boto3.session.Session()
@@ -14,6 +16,12 @@ handler = logging.StreamHandler()
 handler.setLevel(logging.INFO)
 handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
 logger.addHandler(handler)
+
+
+def _exit(code, message):
+
+    return {'statusCode': code, 'body': json.dumps({
+        'error' if code >= 300 else 'success': message})}
 
 
 def define_params():
@@ -138,6 +146,17 @@ def get_instance_details():
     return addresses, hosts
 
 
+def get_s3_buckets():
+
+    logger.info('Fetching S3 buckets...')
+    s3_client = SESSION.client('s3')
+    buckets = [x.get('Name') for x in s3_client
+               .list_buckets().get('Buckets', [{}])]
+
+    logger.info('[%02d] buckets fetched.', len(buckets))
+    return buckets
+
+
 def get_dns_records():
 
     logger.info('Fetching route53 hosted zones with records...')
@@ -190,8 +209,43 @@ def is_whitelisted(config, list_name, value):
                 return True
 
 
-def parse_records(zones, ips, hosts, cfdomains, config):
+def post_on_slack(config, text):
 
+    if not text:
+        logger.info('No text to push to slack.')
+        return
+
+    if not config.get('hooks'):
+        message = 'No slack hooks provided in config file.'
+        return _exit(404, message)
+
+    logger.info('Pushing text to slack...')
+    for url in config['hooks']:
+        response, _count = (None, 0)
+        while not response and _count < 5:
+            try:
+                response = requests.post(url, json={'text': text})
+            except:
+                logger.info('Could not send slack request. '
+                            'Retrying after 10 secs...')
+                time.sleep(10)
+                _count += 1
+
+        if not response:
+            continue
+
+        if response.status_code == 200:
+            message = 'Pushed message to slack successfully.'
+
+        else:
+            message = 'Could not push message to slack: <(%s) %s>' % (
+                response.status_code, response.content.decode('utf8'))
+            return _exit(500, message)
+
+
+def get_parsed_records(zones, ips, hosts, cfdomains, buckets, config):
+
+    logger.info(str())
     logger.info('Parsing zone records...')
 
     record_names = list()
@@ -205,7 +259,7 @@ def parse_records(zones, ips, hosts, cfdomains, config):
     ignore_types = config.get('ignore_records', list())
     logger.info('Excluded %s record types.', ignore_types)
 
-    for zone in zones:
+    for zone in zones.copy():
         records = zone['records']
 
         for record in records.copy():
@@ -228,6 +282,10 @@ def parse_records(zones, ips, hosts, cfdomains, config):
                         subrecords.remove(subrecord)
                         continue
 
+                    if 's3.amazonaws.com' in value and record.get(
+                            'Name', str()).strip('.') in buckets:
+                        subrecords.remove(subrecord)
+
                     if 'cloudfront.net' in value:
                         filtered_value = value.strip(zone.get('name', str()))
                         if filtered_value.strip('.') in cfdomains:
@@ -249,6 +307,12 @@ def parse_records(zones, ips, hosts, cfdomains, config):
                     if is_whitelisted(config, 'ips', value):
                         subrecords.remove(subrecord)
 
+                alias_dns = record.get(
+                    'AliasTarget', dict()).get('DNSName', str())
+                if alias_dns and alias_dns.startswith('s3-website') \
+                        and record.get('Name', str()).strip('.') in buckets:
+                    record.pop('AliasTarget')
+
                 if not subrecords:
                     records.remove(record)
 
@@ -263,15 +327,48 @@ def parse_records(zones, ips, hosts, cfdomains, config):
                 if not subrecords:
                     records.remove(record)
 
+        if not records:
+            zones.remove(zone)
+
     logger.info('Parsed zone records successfully.')
     print(json.dumps(zones, indent=2))
+    return zones
 
 
-if __name__ == "__main__":
+def main(_, __):
 
     define_params()
     config = read_config()
     cf_domains = get_cloudfront_domains()
     ips, hosts = get_instance_details()
+    buckets = get_s3_buckets()
     hosted_zones = get_dns_records()
-    parse_records(hosted_zones, ips, hosts, cf_domains, config)
+
+    zones = get_parsed_records(
+        hosted_zones, ips, hosts, cf_domains, buckets, config)
+
+    text = str()
+    for zone in zones:
+        if not zone.get('records'):
+            continue
+        text += '\n*Hosted Zone:* `%s`\n' % (zone.get('name'))
+        for record in zone.get('records'):
+            text += '   *`[%s] %s`*  `VALUES => (%s)`\n' % (record.get(
+                'Type'), record.get('Name'), ', '.join([
+                    x.get('Value') for x in record.get(
+                        'ResourceRecords', [{}])]) or
+                        record.get('AliasTarget', dict()).get('DNSName'))
+
+    heading = 'Followings DNS records are detected to be potentially stale.\n'
+    text = heading + text if text else text
+    response = post_on_slack(config, text)
+    if response and response.get('statusCode'):
+        return response
+
+    return _exit(200, 'Execution returned normally.')
+
+
+if __name__ == "__main__":
+    main({}, {})
+
+
