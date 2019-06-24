@@ -69,17 +69,51 @@ def get_cloudfront_domains():
 
     logger.info('Fetching cloudfront domains...')
     domains = list()
-    cloudfront = SESSION.client('cloudfront')
-    res = cloudfront.list_distributions()
-    if not res.get('DistributionList'):
-        return domains
+    regions = SESSION.get_available_regions('dynamodb')
 
-    for item in res['DistributionList'].get('Items', list()):
-        domains.append(item.get('DomainName'))
+    for region in regions:
+        cloudfront = SESSION.client('cloudfront', region_name=region)
+        res = cloudfront.list_distributions()
+        if not res.get('DistributionList'):
+            continue
+
+        for item in res['DistributionList'].get('Items', list()):
+            domains.append(item.get('DomainName'))
 
     logger.info('[%02d] cloudfront domains fetched.', len(domains))
     logger.debug(json.dumps(domains, indent=2))
     return domains
+
+
+def get_beanstalk_endpoints():
+
+    logger.info('Fetching elasticbeanstalk environments...')
+    regions = SESSION.get_available_regions('dynamodb')
+    envs = list()
+    for region in regions:
+        ebclient = SESSION.client('elasticbeanstalk', region_name=region)
+        for item in (ebclient.describe_environments() or dict()) \
+                .get('Environments', list()):
+            envs.append(item.get('CNAME'))
+
+    logger.info('[%d] elasticbeanstalk apps found.', len(envs))
+    return envs
+
+
+def get_elb_names():
+
+    logger.info('Fetching elb details...')
+    regions = SESSION.get_available_regions('dynamodb')
+
+    names = list()
+    for region in regions:
+        client = SESSION.client('elb', region_name=region)
+        for item in (client.describe_load_balancers() or dict()) \
+                .get('LoadBalancerDescriptions', list()):
+            names.append(item.get('DNSName'))
+
+    logger.info('[%d] elb names fetched.', len(names))
+    return names
 
 
 def get_instance_details():
@@ -149,9 +183,13 @@ def get_instance_details():
 def get_s3_buckets():
 
     logger.info('Fetching S3 buckets...')
-    s3_client = SESSION.client('s3')
-    buckets = [x.get('Name') for x in s3_client
-               .list_buckets().get('Buckets', [{}])]
+    regions = SESSION.get_available_regions('dynamodb')
+    buckets = list()
+    for region in regions:
+        s3_client = SESSION.client('s3', region_name=region)
+        buckets.extend([
+            x.get('Name') for x in s3_client.list_buckets().get(
+                'Buckets', [{}])])
 
     logger.info('[%02d] buckets fetched.', len(buckets))
     return buckets
@@ -243,7 +281,8 @@ def post_on_slack(config, text):
             return _exit(500, message)
 
 
-def get_parsed_records(zones, ips, hosts, cfdomains, buckets, config):
+def get_parsed_records(zones, ips, hosts, cfdomains,
+                       buckets, eb_endpoints, elb_names, config):
 
     logger.info(str())
     logger.info('Parsing zone records...')
@@ -290,6 +329,13 @@ def get_parsed_records(zones, ips, hosts, cfdomains, buckets, config):
                         filtered_value = value.strip(zone.get('name', str()))
                         if filtered_value.strip('.') in cfdomains:
                             subrecords.remove(subrecord)
+
+                    if 'elasticbeanstalk.com' in value and \
+                            value in eb_endpoints:
+                        subrecords.remove(subrecord)
+
+                    if 'elb.' in value and value in elb_names:
+                        subrecords.remove(subrecord)
 
                 if not subrecords:
                     records.remove(record)
@@ -339,13 +385,16 @@ def main(_, __):
 
     define_params()
     config = read_config()
+    elb_names = get_elb_names()
+    eb_endpoints = get_beanstalk_endpoints()
     cf_domains = get_cloudfront_domains()
     ips, hosts = get_instance_details()
     buckets = get_s3_buckets()
     hosted_zones = get_dns_records()
 
     zones = get_parsed_records(
-        hosted_zones, ips, hosts, cf_domains, buckets, config)
+        hosted_zones, ips, hosts, cf_domains,
+        buckets, eb_endpoints, elb_names, config)
 
     text = str()
     for zone in zones:
@@ -370,5 +419,3 @@ def main(_, __):
 
 if __name__ == "__main__":
     main({}, {})
-
-
