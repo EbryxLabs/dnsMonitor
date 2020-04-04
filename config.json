@@ -2,13 +2,8 @@
   "whitelists": {
     "ips": [],
     "hosts": [
-      "*elasticbeanstalk.com*",
-      "*amazonses.com*",
-      "*elb.amazonaws.com*",
-      "*rds.amazonaws.com",
-      "*cache.amazonaws.com",
-      "*es.amazonaws.com",
-      "*.acm-validations.*"
+      "*.acm-validations.*",
+      "*This resource record"
     ],
     "txts": []
   },
