@@ -73,12 +73,20 @@ def get_cloudfront_domains():
 
     for region in regions:
         cloudfront = SESSION.client('cloudfront', region_name=region)
-        res = cloudfront.list_distributions()
-        if not res.get('DistributionList'):
-            continue
 
-        for item in res['DistributionList'].get('Items', list()):
-            domains.append(item.get('DomainName'))
+        nextMarker = None
+        isTruncated = False
+        while True:
+            res = list()
+            if not nextMarker: res = cloudfront.list_distributions(MaxItems='1000')
+            else: res = cloudfront.list_distributions(MaxItems='1000', Marker=nextMarker)
+
+            for item in res.get('DistributionList').get('Items', list()):
+                domains.append(item.get('DomainName'))
+
+            nextMarker = res.get('DistributionList').get('NextMarker')
+            if nextMarker: continue
+            else: break
 
     logger.info('[%02d] cloudfront domains fetched.', len(domains))
     logger.debug(json.dumps(domains, indent=2))
@@ -92,9 +100,13 @@ def get_beanstalk_endpoints():
     envs = list()
     for region in regions:
         ebclient = SESSION.client('elasticbeanstalk', region_name=region)
-        for item in (ebclient.describe_environments() or dict()) \
-                .get('Environments', list()):
-            envs.append(item.get('CNAME'))
+        logger.info('Fetching for region {}'.format(region))
+        try:
+            for item in (ebclient.describe_environments() or dict()) \
+                    .get('Environments', list()):
+                envs.append(item.get('CNAME'))
+        except Exception as e:
+            logger.warn('Exception {0} occurred in get_beanstalk_endpoints() for region {1}'.format(e, region))
 
     logger.info('[%d] elasticbeanstalk apps found.', len(envs))
     return envs
@@ -106,13 +118,42 @@ def get_elb_names():
     regions = SESSION.get_available_regions('dynamodb')
 
     names = list()
+
     for region in regions:
         client = SESSION.client('elb', region_name=region)
-        for item in (client.describe_load_balancers() or dict()) \
-                .get('LoadBalancerDescriptions', list()):
-            names.append(item.get('DNSName'))
+        logger.info('Fetching for region {}'.format(region))
+        try:
+            nextMarker = None
+            while True:
+                res = list()
+                if not nextMarker: res = client.describe_load_balancers(PageSize=400)
+                else: res = client.describe_load_balancers(PageSize=400, Marker=nextMarker)
+                for item in res.get('LoadBalancerDescriptions'):
+                    names.append(item.get('DNSName'))
+                nextMarker = res.get('NextMarker')
+                if nextMarker: continue
+                else: break
+        except Exception as e:
+            logger.warn('Exception {0} occurred in get_elb_names() for region {1}'.format(e, region))
 
-    logger.info('[%d] elb names fetched.', len(names))
+    for region in regions:
+        client = SESSION.client('elbv2', region_name=region)
+        logger.info('Fetching for region {}'.format(region))
+        try:
+            nextMarker = None
+            while True:
+                res = list()
+                if not nextMarker: res = client.describe_load_balancers(PageSize=400)
+                else: res = client.describe_load_balancers(PageSize=400, Marker=nextMarker)
+                for item in res.get('LoadBalancers'):
+                    names.append(item.get('DNSName'))
+                nextMarker = res.get('NextMarker')
+                if nextMarker: continue
+                else: break
+        except Exception as e:
+            logger.warn('Exception {0} occurred in get_elbv2_names() for region {1}'.format(e, region))
+
+    logger.info('[%d] elb 1&2s names fetched.', len(names))
     return names
 
 
@@ -128,56 +169,105 @@ def get_instance_details():
     for region_name in regions:
         ec2 = SESSION.client('ec2', region_name=region_name)
         logger.info('    Fetching from region [%s]...' % (region_name))
-        res = ec2.describe_addresses()
+        try:
+            res = ec2.describe_addresses()
 
-        for item in res.get('Addresses'):
-            public = item.get('PublicIp')
-            private = item.get('PrivateIpAddress')
+            for item in res.get('Addresses'):
+                public = item.get('PublicIp')
+                private = item.get('PrivateIpAddress')
 
-            if public:
-                addresses.append(public)
-                hosts.append('ec2-' + '-'.join(public.split('.')) + '.' +
-                             region_name + '.compute.amazonaws.com')
-            if private:
-                addresses.append(private)
-                hosts.append('ip-' + '-'.join(private.split('.')) + '.' +
-                             region_name + '.compute.internal')
+                if public:
+                    addresses.append(public)
+                    hosts.append('ec2-' + '-'.join(public.split('.')) + '.' +
+                                 region_name + '.compute.amazonaws.com')
+                if private:
+                    addresses.append(private)
+                    hosts.append('ip-' + '-'.join(private.split('.')) + '.' +
+                                 region_name + '.compute.internal')
+        except Exception as e:
+            logger.warn('Exception {0} occurred in get_instance_details() while describe_addresses() for region {1}'.format(e, region_name))
 
     logger.info(str())
     logger.info('  Fetching instances\' IP addresses...')
     for region_name in regions:
         ec2 = SESSION.client('ec2', region_name=region_name)
         logger.info('    Fetching from region [%s]...' % (region_name))
+        try:
+            next_token = None
+            while True:
+                if not next_token:
+                    res = ec2.describe_instances(MaxResults=999)
+                else:
+                    res = ec2.describe_instances(
+                        MaxResults=999, NextToken=next_token)
 
-        next_token = None
-        while True:
-            if not next_token:
-                res = ec2.describe_instances(MaxResults=999)
-            else:
-                res = ec2.describe_instances(
-                    MaxResults=999, NextToken=next_token)
+                for _ in res.get('Reservations'):
+                    for instance in _.get('Instances'):
+                        if instance.get('PublicIpAddress'):
+                            addresses.append(instance['PublicIpAddress'])
+                        if instance.get('PrivateIpAddress'):
+                            addresses.append(instance['PrivateIpAddress'])
+                        if instance.get('PublicDnsName'):
+                            hosts.append(instance['PublicDnsName'])
+                        if instance.get('PrivateDnsName'):
+                            hosts.append(instance['PrivateDnsName'])
 
-            for _ in res.get('Reservations'):
-                for instance in _.get('Instances'):
-                    if instance.get('PublicIpAddress'):
-                        addresses.append(instance['PublicIpAddress'])
-                    if instance.get('PrivateIpAddress'):
-                        addresses.append(instance['PrivateIpAddress'])
-                    if instance.get('PublicDnsName'):
-                        hosts.append(instance['PublicDnsName'])
-                    if instance.get('PrivateDnsName'):
-                        hosts.append(instance['PrivateDnsName'])
-
-            if res.get('NextToken'):
-                next_token = res['NextToken']
-            else:
-                break
+                if res.get('NextToken'):
+                    next_token = res['NextToken']
+                else:
+                    break
+        except Exception as e:
+            logger.warn('Exception {0} occurred in get_instance_details() while describe_instances() for region {1}'.format(e, region_name))
 
     logger.info(str())
     logger.info('[%02d] IPs fetched.', len(addresses))
     logger.debug(addresses)
     logger.debug(hosts)
     return addresses, hosts
+
+
+def get_rds_endpoints():
+    logger.info('Fetching RDS details...')
+    regions = SESSION.get_available_regions('dynamodb')
+
+    names = list()
+
+    for region in regions:
+        client = SESSION.client('rds', region_name=region)
+        logger.info('Fetching for region {}'.format(region))
+        try:
+            nextMarker = None
+            while True:
+                res = list()
+                if not nextMarker: res = client.describe_db_clusters(MaxRecords=100, IncludeShared=True)
+                else: res = client.describe_db_clusters(MaxRecords=100, IncludeShared=True, Marker=nextMarker)
+                for item in res.get('DBClusters'):
+                    names.append(item.get('Endpoint'))
+                    names.append(item.get('ReaderEndpoint'))
+                    for ce in item.get('CustomEndpoints'):
+                        names.append(ce)
+                nextMarker = res.get('Marker')
+                if nextMarker: continue
+                else: break
+            names = list(dict.fromkeys(names))
+
+            nextMarker = None
+            while True:
+                res = list()
+                if not nextMarker: res = client.describe_db_instances(MaxRecords=100)
+                else: res = client.describe_db_instances(MaxRecords=100, Marker=nextMarker)
+                for item in res.get('DBInstances'):
+                    names.append(item.get('Endpoint').get('Address'))
+                nextMarker = res.get('Marker')
+                if nextMarker: continue
+                else: break
+            names = list(dict.fromkeys(names))
+
+        except Exception as e:
+            logger.warn('Exception {0} occurred in get_elbv2_names() for region {1}'.format(e, region))
+
+    logger.info('[%d] RDS endpoints fetched.', len(names))
+    return names
 
 
 def get_s3_buckets():
@@ -187,22 +277,39 @@ def get_s3_buckets():
     buckets = list()
     for region in regions:
         s3_client = SESSION.client('s3', region_name=region)
-        buckets.extend([
-            x.get('Name') for x in s3_client.list_buckets().get(
-                'Buckets', [{}])])
+        try:
+            buckets.extend([
+                x.get('Name') for x in s3_client.list_buckets().get(
+                    'Buckets', [{}])])
+        except Exception as e:
+            logger.warn('Exception {0} occurred in get_s3_buckets() for region {1}'.format(e, region))
 
     logger.info('[%02d] buckets fetched.', len(buckets))
     return buckets
+
+
+def list_hosted_zones(route53):
+    ret = list()
+    nextMarker = None
+    while True:
+        res = list()
+        if not nextMarker: res = route53.list_hosted_zones(MaxItems='100')
+        else: res = route53.list_hosted_zones(MaxItems='100', Marker=nextMarker)
+        ret.extend(res.get('HostedZones'))
+        nextMarker = res.get('NextMarker')
+        if nextMarker: continue
+        else: break
+    return ret
 
 
 def get_dns_records():
 
     logger.info('Fetching route53 hosted zones with records...')
     route53 = SESSION.client('route53')
-    res = route53.list_hosted_zones()
+    res = list_hosted_zones(route53)
 
     hosted_zones = list()
-    for zone in res.get('HostedZones', list()):
+    for zone in res:
         if not zone.get('Id'):
             continue
 
@@ -211,10 +318,10 @@ def get_dns_records():
         while True:
             if not record_name:
                 res = route53.list_resource_record_sets(
-                    HostedZoneId=zone['Id'])
+                    HostedZoneId=zone['Id'], MaxItems='100')
             else:
                 res = route53.list_resource_record_sets(
-                    HostedZoneId=zone['Id'], StartRecordName=record_name)
+                    HostedZoneId=zone['Id'], StartRecordName=record_name, MaxItems='100')
 
             record_sets.extend(res.get('ResourceRecordSets'))
             if not res.get('IsTruncated'):
@@ -282,7 +389,7 @@ def post_on_slack(config, text):
 
 
 def get_parsed_records(zones, ips, hosts, cfdomains,
-                       buckets, eb_endpoints, elb_names, config):
+                       buckets, eb_endpoints, elb_names, vpc_endpoints, rds_endpoints, config):
 
     logger.info(str())
     logger.info('Parsing zone records...')
@@ -299,10 +406,14 @@ def get_parsed_records(zones, ips, hosts, cfdomains,
     logger.info('Excluded %s record types.', ignore_types)
 
     for zone in zones.copy():
+        # iterate through copy of each hosted zone
         records = zone['records']
 
         for record in records.copy():
+
+            # iterate through copy of records of in a hosted zone
             if record.get('Type') in ignore_types:
+                # remove DNS record types which are of little to no interest, from the original
                 records.remove(record)
 
             if record.get('Type') == 'CNAME':
@@ -317,14 +428,27 @@ def get_parsed_records(zones, ips, hosts, cfdomains,
                         subrecords.remove(subrecord)
                         continue
 
+                    # Remove subrecords for whitelisted hosts
                     if is_whitelisted(config, 'hosts', value):
                         subrecords.remove(subrecord)
                         continue
 
+                    # Remove subrecords for known/existing S3 buckets
                     if 's3.amazonaws.com' in value and record.get(
                             'Name', str()).strip('.') in buckets:
                         subrecords.remove(subrecord)
 
+                    # Remove subrecords for known/existing VPC endpoints
+                    if 'vpce.amazonaws.com' in value and record.get(
+                            'Name', str()).strip('.') in vpc_endpoints:
+                        subrecords.remove(subrecord)
+
+                    # Remove subrecords for known/existing RDS endpoints
+                    if '.rds.amazonaws.com' in value and record.get(
+                            'Name', str()).strip('.') in rds_endpoints:
+                        subrecords.remove(subrecord)
+
+                    # Remove subrecords for known/existing CloudFront domains
                     if 'cloudfront.net' in value:
                         filtered_value = value.strip(zone.get('name', str()))
                         if filtered_value.strip('.') in cfdomains:
@@ -381,6 +505,49 @@ def get_parsed_records(zones, ips, hosts, cfdomains,
     return zones
 
 
+def get_vpc_endpoints():
+    logger.info('Fetching VPC endpoints DNS records...')
+    regions = SESSION.get_available_regions('dynamodb')
+    vpc_endpoints = list()
+    for region in regions:
+        ec2 = boto3.client('ec2', region_name=region)
+        
+        try:
+            nextToken = None
+            while True:
+                res = list()
+                if not nextToken: res = ec2.describe_vpc_endpoints(MaxResults=1000)
+                else: res = ec2.describe_vpc_endpoints(MaxResults=1000, NextToken=nextToken)
+
+                for item in res.get('VpcEndpoints'):
+                    for dnsEntry in item.get('DnsEntries'):
+                        vpc_endpoints.extend(dnsEntry.get('DnsName'))
+
+                nextToken = res.get('NextToken')
+                if nextToken: continue
+                else: break
+
+            logger.info('Fetched VPC endpoint DNS names for region {}'.format(region))
+        
+        except Exception as e:
+            logger.error('Exception {} occurred in get_vpc_endpoints() while fetching DNS entries for VPC endpoints in region {}'.format(e, region))
+
+    logger.info('[{}] List of VPC endpoint DNS names fetched...'.format(len(vpc_endpoints)))
+    return vpc_endpoints
+
+
+def prepare_slack_msg(zone):
+    text = str()
+    text += '\n*Following DNS records have been detected to be potentially stale and vulnerable to subdomain takeover for hosted zone:* `%s`\n' % (zone.get('name'))
+    for record in zone.get('records'):
+        text += '   *`[%s] %s`*  `VALUES => (%s)`\n' % (record.get(
+            'Type'), record.get('Name'), ', '.join([
+                x.get('Value') for x in record.get(
+                    'ResourceRecords', [{}])]) or
+                    record.get('AliasTarget', dict()).get('DNSName'))
+    return text
+
+
 def main(_, __):
 
     define_params()
@@ -390,30 +557,21 @@ def main(_, __):
     cf_domains = get_cloudfront_domains()
     ips, hosts = get_instance_details()
     buckets = get_s3_buckets()
+    vpc_endpoints = get_vpc_endpoints()
+    rds_endpoints = get_rds_endpoints()
     hosted_zones = get_dns_records()
 
     zones = get_parsed_records(
         hosted_zones, ips, hosts, cf_domains,
-        buckets, eb_endpoints, elb_names, config)
+        buckets, eb_endpoints, elb_names, vpc_endpoints, rds_endpoints, config)
 
     text = str()
     for zone in zones:
         if not zone.get('records'):
             continue
-        text += '\n*Hosted Zone:* `%s`\n' % (zone.get('name'))
-        for record in zone.get('records'):
-            text += '   *`[%s] %s`*  `VALUES => (%s)`\n' % (record.get(
-                'Type'), record.get('Name'), ', '.join([
-                    x.get('Value') for x in record.get(
-                        'ResourceRecords', [{}])]) or
-                        record.get('AliasTarget', dict()).get('DNSName'))
-
-    heading = 'Followings DNS records are detected to be potentially stale.\n'
-    text = heading + text if text else text
-    response = post_on_slack(config, text)
-    if response and response.get('statusCode'):
-        return response
-
+        response = post_on_slack(config, prepare_slack_msg(zone))
+        logger.info('Results for zone {} posted on Slack with response {}'.format(zone.get('name'), response))
+        
     return _exit(200, 'Execution returned normally.')
 
 
