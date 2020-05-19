@@ -9,6 +9,7 @@ import requests
 
 
 SESSION = boto3.session.Session()
+args = None
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -26,30 +27,34 @@ def _exit(code, message):
 
 def define_params():
 
-    global SESSION, logger, handler
+    global SESSION, logger, handler, args
     parser = argparse.ArgumentParser()
-    parser.add_argument('-v', default='info', choices=['info', 'debug'],
+    parser.add_argument('-v', '--verbose', default='info', choices=['info', 'debug'],
                         help='level of logging for the script.')
-    parser.add_argument('-profile', default='default', type=str,
+    parser.add_argument('-p', '--profile', default='default', type=str,
                         help='profile name to use for aws configuration. '
                         'mentioned in files `~/.aws/credentials` and '
                         '`~/.aws/config`')
+    parser.add_argument('-c', '--config', default='config.json', type=str,
+                        help='Config file to use. Default is config.json')
 
     args = parser.parse_args()
 
     SESSION = boto3.session.Session(profile_name=args.profile)
-    logger.setLevel(logging.INFO if args.v == 'info' else logging.DEBUG)
-    handler.setLevel(logging.INFO if args.v == 'info' else logging.DEBUG)
+    logger.setLevel(logging.INFO if args.verbose == 'info' else logging.DEBUG)
+    handler.setLevel(logging.INFO if args.verbose == 'info' else logging.DEBUG)
 
 
 def read_config():
 
-    path = os.environ.get('CONFIG_FILE')
-    if not path:
-        logger.info('No `CONFIG_FILE` environment variable found. '
-                    'Skipping config read.')
-        return dict()
+    # path = os.environ.get('CONFIG_FILE')
+    
+    # if not path:
+    #     logger.info('No `CONFIG_FILE` environment variable found. '
+    #                 'Skipping config read.')
+    #     return dict()
 
+    path = args.config
     if not os.path.isfile(path):
         logger.info('Invalid path in `CONFIG_FILE` environment variable. '
                     'Skipping config read.')
