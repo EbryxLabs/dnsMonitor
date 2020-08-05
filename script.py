@@ -37,8 +37,14 @@ def define_params():
                         '`~/.aws/config`')
     parser.add_argument('-c', '--config', default='config.json', type=str,
                         help='Config file to use. Default is config.json')
+    parser.add_argument('-t', '--testing', default='False', type=str,
+                        help='Send Slack message or not...')
+    parser.add_argument('-o', '--output_json', default='.output.json', type=str,
+                        help='Name of the file that\'ll contain all the results in JSON format')
 
     args = parser.parse_args()
+
+    args.testing = False if args.testing == 'False' else True
 
     SESSION = boto3.session.Session(profile_name=args.profile)
 
@@ -152,9 +158,11 @@ def get_elb_names():
                 res = list()
                 if not nextMarker: res = client.describe_load_balancers(PageSize=400)
                 else: res = client.describe_load_balancers(PageSize=400, Marker=nextMarker)
+                # logger.info('Starting for loop...')
                 for item in res.get('LoadBalancers'):
                     names.append(item.get('DNSName'))
                 nextMarker = res.get('NextMarker')
+                # logger.info('nextMarker found...')
                 if nextMarker: continue
                 else: break
         except Exception as e:
@@ -243,35 +251,43 @@ def get_rds_endpoints():
         client = SESSION.client('rds', region_name=region)
         logger.info('Fetching for region {}'.format(region))
         try:
+            logger.info('describe_db_clusters() starting...')
             nextMarker = None
             while True:
                 res = list()
                 if not nextMarker: res = client.describe_db_clusters(MaxRecords=100, IncludeShared=True)
                 else: res = client.describe_db_clusters(MaxRecords=100, IncludeShared=True, Marker=nextMarker)
+                logger.info('for loop starting...')
                 for item in res.get('DBClusters'):
                     names.append(item.get('Endpoint'))
                     names.append(item.get('ReaderEndpoint'))
-                    for ce in item.get('CustomEndpoints'):
-                        names.append(ce)
+                    logger.info('inner for loop starting...')
+                    if item.get('CustomEndpoints'):
+                        for ce in item.get('CustomEndpoints'):
+                            names.append(ce)
                 nextMarker = res.get('Marker')
                 if nextMarker: continue
                 else: break
             names = list(dict.fromkeys(names))
+            logger.info('describe_db_clusters() done...')
 
+            logger.info('describe_db_instances() starting...')
             nextMarker = None
             while True:
                 res = list()
                 if not nextMarker: res = client.describe_db_instances(MaxRecords=100)
                 else: res = client.describe_db_instances(MaxRecords=100, Marker=nextMarker)
+                logger.info('for loop starting...')
                 for item in res.get('DBInstances'):
                     names.append(item.get('Endpoint').get('Address'))
                 nextMarker = res.get('Marker')
                 if nextMarker: continue
                 else: break
             names = list(dict.fromkeys(names))
+            logger.info('describe_db_instances() done...')
 
         except Exception as e:
-            logger.warn('Exception {0} occurred in get_elbv2_names() for region {1}'.format(e, region))
+            logger.warn('Exception {0} occurred in get_rds_endpoints() for region {1}'.format(e, region))
 
     logger.info('[%d] RDS endpoints fetched.', len(names))
     return names
@@ -572,12 +588,17 @@ def main(_, __):
         hosted_zones, ips, hosts, cf_domains,
         buckets, eb_endpoints, elb_names, vpc_endpoints, rds_endpoints, config)
 
-    text = str()
-    for zone in zones:
-        if not zone.get('records'):
-            continue
-        response = post_on_slack(config, prepare_slack_msg(zone))
-        logger.info('Results for zone {} posted on Slack with response {}'.format(zone.get('name'), response))
+    with open(args.output_json, 'w') as o:
+        json.dump({'output': zones}, o)
+        logger.info('Results added to {} file...'.format(args.output_json))
+
+    if not args.testing:
+        text = str()
+        for zone in zones:
+            if not zone.get('records'):
+                continue
+            response = post_on_slack(config, prepare_slack_msg(zone))
+            logger.info('Results for zone {} posted on Slack with response {}'.format(zone.get('name'), response))
         
     return _exit(200, 'Execution returned normally.')
 
