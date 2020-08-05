@@ -4,7 +4,7 @@ DNS monitoring made simple.
 ### route53
 You will have to provide appropriate profile name to use for aws credentials and/or config.
 ```
-python script.py -profile my-profile-name
+python script.py --profile my-profile-name
 # default name is `default`
 ```
 
