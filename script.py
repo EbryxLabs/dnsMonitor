@@ -1,11 +1,11 @@
 import os
 import json
 import time
+import boto3
 import logging
 import argparse
-
-import boto3
 import requests
+from utils import setup_logger
 
 
 SESSION = boto3.session.Session()
@@ -41,6 +41,8 @@ def define_params():
     args = parser.parse_args()
 
     SESSION = boto3.session.Session(profile_name=args.profile)
+
+    logger = setup_logger()
     logger.setLevel(logging.INFO if args.verbose == 'info' else logging.DEBUG)
     handler.setLevel(logging.INFO if args.verbose == 'info' else logging.DEBUG)
 
